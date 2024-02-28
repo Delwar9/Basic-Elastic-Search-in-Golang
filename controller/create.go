@@ -2,46 +2,129 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"github.com/elastic/go-elasticsearch/v8"
+	"github.com/elastic/go-elasticsearch/v8/esapi"
 	"log"
 	"net/http"
 	"strings"
 )
 
-// Create function to perform the create operation in Elasticsearch
+// CreateOrUpdateIndexAndInsertData checks if the index already exists. If it does, it inserts the data directly. If not, it creates the index and then inserts the data.
 
-func Create(es *elasticsearch.Client, w http.ResponseWriter, r *http.Request) {
-	// Define your create query
-	var (
-		index  = "sample-index" // Replace "your_index" with your actual index name
-		id     = "1"            // Replace "your_id" with your actual document ID
-		create = `{
-			"content": "sample document"
-		}` // Replace "field_name" and "field_value" with your actual field name and field value
-	)
+func CreateOrUpdateIndexAndInsertData(es *elasticsearch.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		// Decode the request body into the Document struct
+		var doc Products
+		err := json.NewDecoder(req.Body).Decode(&doc)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Error decoding request body: %s", err), http.StatusInternalServerError)
+			return
+		}
 
-	// Perform the Create
-	res, err := es.Create(
-		index,                     // Index name
-		id,                        // Document ID
-		strings.NewReader(create), // Document body
-		es.Create.WithContext(context.Background()),
-		es.Create.WithRefresh("true"),
-	)
-	if err != nil {
-		log.Fatalf("Error performing create: %s", err)
+		// Define the index name
+		indexName := "sl_test_index"
+
+		// Check if index already exists
+		res, err := es.Indices.Exists([]string{indexName})
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Error checking if index exists: %s", err), http.StatusInternalServerError)
+			return
+		}
+		defer res.Body.Close()
+
+		if res.StatusCode == 200 {
+			log.Printf("Index '%s' already exists", indexName)
+		} else {
+			// Create the index if it doesn't exist
+			indexSettings := `{
+				"settings": {
+					"number_of_shards": 1,
+					"number_of_replicas": 0
+				},
+				"mappings": {
+					"properties": {
+						"productId": {"type": "integer"},
+						"variantId": {"type": "integer"},
+						"productAttributeId": {"type": "integer"},
+						"productAttributeValue": {"type": "text"},
+						"categoryId": {"type": "integer"},
+						"categoryNameEn": {"type": "text"},
+						"categoryNameBn": {"type": "text"},
+						"productNameEn": {"type": "text"},
+						"productNameBn": {"type": "text"},
+						"price": {"type": "float"},
+						"stock": {"type": "integer"},
+						"discountAmt": {"type": "float"}
+					}
+				}
+			}`
+
+			createReq := esapi.IndicesCreateRequest{
+				Index: indexName,
+				Body:  strings.NewReader(indexSettings),
+			}
+
+			createRes, err := createReq.Do(context.Background(), es)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("Error creating index: %s", err), http.StatusInternalServerError)
+				return
+			}
+			defer createRes.Body.Close()
+
+			if createRes.IsError() {
+				http.Error(w, fmt.Sprintf("Error creating index: %s", createRes.String()), createRes.StatusCode)
+				return
+			}
+
+			log.Println("Index created successfully")
+		}
+
+		// Index data into the index
+		docJSON, err := json.Marshal(doc)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Error marshalling document: %s", err), http.StatusInternalServerError)
+			return
+		}
+
+		indexReq := esapi.IndexRequest{
+			Index:   indexName,
+			Body:    strings.NewReader(string(docJSON)),
+			Refresh: "true",
+		}
+
+		_, err = indexReq.Do(context.Background(), es)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Error indexing document: %s", err), http.StatusInternalServerError)
+			return
+		}
+
+		log.Println("Document indexed successfully")
+
+		// Write the response
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]interface{}{"message": "Document indexed successfully"})
 	}
-	defer res.Body.Close()
+}
 
-	// Parse the response
-	if res.IsError() {
-		log.Fatalf("Error response: %s", res.String())
-	}
+type Document struct {
+	Name string `json:"name"`
+	City string `json:"city"`
+}
 
-	// Print the create results
-	fmt.Println(res.String())
-
-	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"message": "Document created successfully"}`))
+type Products struct {
+	ProductId             int64   `json:"productId"`
+	VariantId             int64   `json:"variantId"`
+	ProductAttributeId    int64   `json:"productAttributeId"`
+	ProductAttributeValue string  `json:"productAttributeValue"`
+	CategoryId            int64   `json:"categoryId"`
+	CategoryNameEn        string  `json:"categoryNameEn"`
+	CategoryNameBn        string  `json:"categoryNameBn"`
+	ProductNameEn         string  `json:"productNameEn"`
+	ProductNameBn         string  `json:"productNameBn"`
+	Price                 float64 `json:"price"`
+	Stock                 int     `json:"stock"`
+	DiscountAmt           float64 `json:"discountAmt"`
 }

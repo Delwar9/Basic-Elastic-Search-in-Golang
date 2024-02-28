@@ -19,9 +19,13 @@ func main() {
 	}
 
 	cfg := elasticsearch.Config{
-		CloudID: os.Getenv("CLOUD_ID"),
-		APIKey:  os.Getenv("API_KEY"),
+		//CloudID:   os.Getenv("CLOUD_ID"),
+		//APIKey:    os.Getenv("API_KEY"),
+		Addresses: []string{os.Getenv("ELASTICSEARCH_URL")},
+		Username:  os.Getenv("ELASTICSEARCH_USERNAME"),
+		Password:  os.Getenv("ELASTICSEARCH_PASSWORD"),
 	}
+
 	es, err := elasticsearch.NewClient(cfg)
 	if err != nil {
 		log.Fatalf("Error creating the client: %s", err)
@@ -31,7 +35,8 @@ func main() {
 	r.Use(middleware.Logger)
 
 	r.Route("/api/v1", func(r chi.Router) {
-		r.Get("/search", controller.Search(es))
+		r.Post("/search", controller.Search(es))
+		r.Post("/create", controller.CreateOrUpdateIndexAndInsertData(es))
 	})
 
 	log.Println("Server started on port 8080")
